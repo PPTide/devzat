@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"strconv"
 
@@ -12,10 +14,13 @@ type ConfigType struct {
 	Port        int               `yaml:"port"`
 	AltPort     int               `yaml:"alt_port"`
 	ProfilePort int               `yaml:"profile_port"`
+	Scrollback  int               `yaml:"scrollback"`
 	DataDir     string            `yaml:"data_dir"`
 	KeyFile     string            `yaml:"key_file"`
 	Admins      map[string]string `yaml:"admins"`
 	Censor      bool              `yaml:"censor,omitempty"`
+	Private     bool              `yaml:"private,omitempty"`
+	Allowlist   map[string]string `yaml:"allowlist,omitempty"`
 
 	IntegrationConfig string `yaml:"integration_config"`
 }
@@ -29,6 +34,9 @@ type IntegrationsType struct {
 	// Slack stores the information needed for the Slack integration.
 	// Check if it is enabled by checking if Slack is nil.
 	Slack *SlackInfo `yaml:"slack"`
+	// Discord stores the information needed for the Discord integration.
+	// Check if it is enabled by checking if Discord is nil.
+	Discord *DiscordInfo `yaml:"discord"`
 
 	RPC *RPCInfo `yaml:"rpc"`
 }
@@ -43,9 +51,18 @@ type TwitterInfo struct {
 type SlackInfo struct {
 	// Token is the Slack API token
 	Token string `yaml:"token"`
-	// Channel is the Slack channel to post to
+	// ChannelID is the Slack channel to post to
 	ChannelID string `yaml:"channel_id"`
-	// Prefix is the prefix to prepend to messages from slack when rendered for SSH users
+	// Prefix is the prefix to prepend to messages from Slack when rendered for SSH users
+	Prefix string `yaml:"prefix"`
+}
+
+type DiscordInfo struct {
+	// Token is the Discord API token
+	Token string `yaml:"token"`
+	// ChannelID is the ID of the channel to post to
+	ChannelID string `yaml:"channel_id"`
+	// Prefix is the prefix to prepend to messages from Discord when rendered for SSH users
 	Prefix string `yaml:"prefix"`
 }
 
@@ -59,18 +76,16 @@ var (
 		Port:        2221,
 		AltPort:     8080,
 		ProfilePort: 5555,
+		Scrollback:  16,
 		DataDir:     "devzat-data",
 		KeyFile:     "devzat-sshkey",
-		Censor:      false,
 
 		IntegrationConfig: "",
 	}
 
-	Integrations = IntegrationsType{
-		Twitter: nil,
-		Slack:   nil,
-		RPC:     nil,
-	}
+	Integrations = IntegrationsType{} // all nil
+
+	Log *log.Logger
 )
 
 func init() {
@@ -107,10 +122,16 @@ func init() {
 	err = os.MkdirAll(Config.DataDir, 0755)
 	errCheck(err)
 
+	logfile, err := os.OpenFile(Config.DataDir+string(os.PathSeparator)+"log.txt", os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0666)
+	errCheck(err)
+	Log = log.New(io.MultiWriter(logfile, os.Stdout), "", log.Ldate|log.Ltime|log.Lshortfile)
+
 	if os.Getenv("PORT") != "" {
 		Config.Port, err = strconv.Atoi(os.Getenv("PORT"))
 		errCheck(err)
 	}
+
+	Backlog = make([]backlogMessage, Config.Scrollback)
 
 	if Config.IntegrationConfig != "" {
 		d, err = os.ReadFile(Config.IntegrationConfig)
@@ -123,7 +144,16 @@ func init() {
 				Integrations.Slack.Prefix = "Slack"
 			}
 			if sl := Integrations.Slack; sl.Token == "" || sl.ChannelID == "" {
-				fmt.Println("error: Slack token or Channel ID is missing")
+				fmt.Println("error: Slack token or channel ID is missing")
+				os.Exit(0)
+			}
+		}
+		if Integrations.Discord != nil {
+			if Integrations.Discord.Prefix == "" {
+				Integrations.Discord.Prefix = "Discord"
+			}
+			if sl := Integrations.Discord; sl.Token == "" || sl.ChannelID == "" {
+				fmt.Println("error: Discord token or channel ID is missing")
 				os.Exit(0)
 			}
 		}
@@ -143,6 +173,10 @@ func init() {
 			fmt.Println("Disabling Slack")
 			Integrations.Slack = nil
 		}
+		if os.Getenv("DEVZAT_OFFLINE_DISCORD") != "" {
+			fmt.Println("Disabling Discord")
+			Integrations.Discord = nil
+		}
 		if os.Getenv("DEVZAT_OFFLINE_TWITTER") != "" {
 			fmt.Println("Disabling Twitter")
 			Integrations.Twitter = nil
@@ -155,11 +189,13 @@ func init() {
 		if os.Getenv("DEVZAT_OFFLINE") != "" {
 			fmt.Println("Offline mode")
 			Integrations.Slack = nil
+			Integrations.Discord = nil
 			Integrations.Twitter = nil
 			Integrations.RPC = nil
 		}
 	}
 	slackInit()
+	discordInit()
 	twitterInit()
 	rpcInit()
 }

@@ -60,9 +60,7 @@ Check out the [Admin's Manual](Admin's%20Manual.md) for complete self-host docum
 
 Devzat uses public keys to identify users. If you are denied access: `foo@devzat.hackclub.com: Permission denied (publickey)` try logging in on port 443, which does not require a key, using `ssh devzat.hackclub.com -p 443`.
 
-Reasons for this
-* You may not have an SSH key pair. Generate one with the command `ssh-keygen` if this is the case. (you can usually check by making sure a file of this form: `~/.ssh/id_*` exists)
-* If you already have a keypair, and you still get this error, it might be because the server does not yet support RSA SHA-2 signatures. Follow issue progress here: [#77](https://github.com/quackduck/devzat/issues/77).
+This error may happen because you do not have an SSH key pair. Generate one with the command `ssh-keygen` if this is the case. (you can usually check if you have a key pair by making sure a file of this form: `~/.ssh/id_*` exists)
 
 ### Help
 
@@ -124,9 +122,12 @@ The rest
    shrug                   ¯\_(ツ)_/¯
 ```
 
-## Plugin API
+## Integrations
 
-Devzat has a plugin API you can use to integrate your own services: [documentation](plugin/README.md)
+When self-hosting an instance, Devzat can integrate with Slack and/or Discord to bridge messages, and Twitter to post new-user announcements. 
+See the [Admin's Manual](Admin's%20Manual.md) for more info.
+
+Devzat has a plugin API you can use to integrate your own services: [documentation](plugin/README.md). Feel free to add a plugin to the main instance. Just ask for a token on the server.
 
 
 ## Stargazers over time
@@ -155,7 +156,7 @@ Mudrank [@mudrankgupta](https://twitter.com/mudrankgupta): "🔥🚀🚀"
 From Hack Club:  
 **[Caleb Denio](https://calebden.io), [Safin Singh](https://safin.dev), [Eleeza](https://github.com/E-Lee-Za)   
 [Jubril](https://github.com/s1ntaxe770r), [Sarthak Mohanty](https://sarthakmohanty.me)    
-[Tommy Pujol](https://itstommy.xyz/), [Sam Poder](http://sampoder.com), [Rishi Kothari](http://rishi.cx)    
+[Sam Poder](http://sampoder.com), [Rishi Kothari](http://rishi.cx)    
 [Amogh Chaubey](https://amogh.sh), [Ella](https://ella.cx/), [Hugo Hu](https://github.com/Hugoyhu)
 [Matthew Stanciu](https://matthewstanciu.me/), [Tanishq Soni](https://tanishqsoni.me)**
 

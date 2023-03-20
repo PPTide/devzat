@@ -1,12 +1,10 @@
 package main
 
 import (
-	"fmt"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
 	"math/rand"
-	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -68,6 +66,7 @@ var (
 		{"rm", rmCMD, "???", "???"},
 		{"su", nickCMD, "???", "This is an alias of nick"},
 		{"colour", colorCMD, "???", "This is an alias of color"}, // appease the british
+		{":q", exitCMD, "", "This is an alias of exit"},          // appease the Vim user
 	}
 )
 
@@ -90,17 +89,13 @@ func runCommands(line string, u *User) {
 	if line == "" {
 		return
 	}
-	defer func() { // crash protection
-		if i := recover(); i != nil {
-			MainRoom.broadcast(Devbot, "Slap the developers in the face for me, the server almost crashed, also tell them this: "+fmt.Sprint(i, "\n"+string(debug.Stack())))
-		}
-	}()
+	defer protectFromPanic()
 	currCmd := strings.Fields(line)[0]
 	if u.messaging != nil && currCmd != "=" && currCmd != "cd" && currCmd != "exit" && currCmd != "pwd" { // the commands allowed in a private dm room
 		dmRoomCMD(line, u)
 		return
 	}
-	if strings.HasPrefix(line, "=") && !u.isSlack {
+	if strings.HasPrefix(line, "=") && !u.isBridge {
 		dmCMD(strings.TrimSpace(strings.TrimPrefix(line, "=")), u)
 		return
 	}
@@ -120,8 +115,8 @@ func runCommands(line string, u *User) {
 		return
 	}
 
-	if u.isSlack {
-		u.room.broadcastNoSlack(u.Name, line)
+	if u.isBridge {
+		u.room.broadcastNoBridges(u.Name, line)
 	} else {
 		u.room.broadcast(u.Name, line)
 	}
@@ -135,7 +130,9 @@ func runCommands(line string, u *User) {
 	}
 
 	if cmd, ok := getCMD(currCmd); ok {
-		cmd.run(args, u)
+		if cmd.argsInfo != "" || args == "" {
+			cmd.run(args, u)
+		}
 	}
 }
 
@@ -163,8 +160,8 @@ func dmCMD(rest string, u *User) {
 }
 
 func hangCMD(rest string, u *User) {
-	if len(rest) > 1 {
-		if !u.isSlack {
+	if len([]rune(rest)) > 1 {
+		if !u.isBridge {
 			u.writeln(u.Name, "hang "+rest)
 			u.writeln(Devbot, "(that word won't show dw)")
 		}
@@ -173,7 +170,7 @@ func hangCMD(rest string, u *User) {
 		u.room.broadcast(Devbot, "```\n"+hangPrint(hangGame)+"\nTries: "+strconv.Itoa(hangGame.triesLeft)+"\n```")
 		return
 	}
-	if !u.isSlack {
+	if !u.isBridge {
 		u.room.broadcast(u.Name, "hang "+rest)
 	}
 	if strings.Trim(hangGame.word, hangGame.guesses) == "" {
@@ -308,7 +305,7 @@ func ticCMD(rest string, u *User) {
 }
 
 func exitCMD(_ string, u *User) {
-	u.close(u.Name + Red.Paint(" has left the chat"))
+	u.close(u.Name + " has left the chat")
 }
 
 func bellCMD(rest string, u *User) {
@@ -362,7 +359,7 @@ func cdCMD(rest string, u *User) {
 		if v, ok := Rooms[rest]; ok {
 			u.changeRoom(v)
 		} else {
-			Rooms[rest] = &Room{rest, make([]*User, 0, 10), sync.Mutex{}}
+			Rooms[rest] = &Room{rest, make([]*User, 0, 10), sync.RWMutex{}}
 			u.changeRoom(Rooms[rest])
 		}
 		return
@@ -402,9 +399,9 @@ func cdCMD(rest string, u *User) {
 }
 
 func tzCMD(tzArg string, u *User) {
-	var err error
 	if tzArg == "" {
 		u.Timezone.Location = nil
+		u.room.broadcast(Devbot, "Enabled relative times!")
 		return
 	}
 	tzArgList := strings.Fields(tzArg)
@@ -419,16 +416,13 @@ func tzCMD(tzArg string, u *User) {
 	case "MT":
 		tz = "America/Phoenix"
 	}
+	var err error
 	u.Timezone.Location, err = time.LoadLocation(tz)
 	if err != nil {
 		u.room.broadcast(Devbot, "Weird timezone you have there, use the format Continent/City, the usual US timezones (PST, PDT, EST, EDT...) or check nodatime.org/TimeZones!")
 		return
 	}
-	if len(tzArgList) == 2 {
-		u.FormatTime24 = tzArgList[1] == "24h"
-	} else {
-		u.FormatTime24 = false
-	}
+	u.FormatTime24 = len(tzArgList) == 2 && tzArgList[1] == "24h"
 	u.room.broadcast(Devbot, "Changed your timezone!")
 }
 
@@ -504,6 +498,7 @@ func unbanIDorIP(toUnban string) bool {
 		if Bans[i].ID == toUnban || Bans[i].Addr == toUnban { // allow unbanning by either ID or IP
 			// remove this ban
 			Bans = append(Bans[:i], Bans[i+1:]...)
+			saveBans()
 			return true
 		}
 	}
@@ -511,20 +506,26 @@ func unbanIDorIP(toUnban string) bool {
 }
 
 func banCMD(line string, u *User) {
-	if !auth(u) {
-		u.room.broadcast(Devbot, "Not authorized")
-		return
-	}
 	split := strings.Split(line, " ")
 	if len(split) == 0 {
 		u.room.broadcast(Devbot, "Which user do you want to ban?")
 		return
 	}
-	victim, ok := findUserByName(u.room, split[0])
-	if !ok {
+	var victim *User
+	var ok bool
+	banner := u.Name
+	if split[0] == "devbot" {
+		u.room.broadcast(Devbot, "Do you really think you can ban me, puny human?")
+		victim = u // mwahahahaha - devbot
+		banner = Devbot
+	} else if !auth(u) {
+		u.room.broadcast(Devbot, "Not authorized")
+		return
+	} else if victim, ok = findUserByName(u.room, split[0]); !ok {
 		u.room.broadcast("", "User not found")
 		return
 	}
+
 	// check if the ban is for a certain duration
 	if len(split) > 1 {
 		dur, err := time.ParseDuration(split[1])
@@ -532,30 +533,28 @@ func banCMD(line string, u *User) {
 			u.room.broadcast(Devbot, "I couldn't parse that as a duration")
 			return
 		}
-		Bans = append(Bans, Ban{victim.addr, victim.id})
-		victim.close(victim.Name + " has been banned by " + u.Name + " for " + dur.String())
+		victim.ban(victim.Name + " has been banned by " + banner + " for " + dur.String())
 		go func(id string) {
 			time.Sleep(dur)
 			unbanIDorIP(id)
 		}(victim.id) // evaluate id now, call unban with that value later
 		return
 	}
-	banUser(u.Name, victim)
-}
-
-func banUser(banner string, victim *User) {
-	Bans = append(Bans, Ban{victim.addr, victim.id})
-	saveBans()
-	victim.close(victim.Name + " has been banned by " + banner)
+	victim.ban(victim.Name + " has been banned by " + banner)
 }
 
 func kickCMD(line string, u *User) {
 	victim, ok := findUserByName(u.room, line)
 	if !ok {
-		u.room.broadcast("", "User not found")
+		if line == "devbot" {
+			u.room.broadcast(Devbot, "You will pay for this")
+			u.close(u.Name + Red.Paint(" has been kicked by ") + Devbot)
+		} else {
+			u.room.broadcast("", "User not found")
+		}
 		return
 	}
-	if !auth(u) {
+	if !auth(u) && victim.id != u.id {
 		u.room.broadcast(Devbot, "Not authorized")
 		return
 	}
@@ -598,7 +597,7 @@ Interesting features:
 * Built in Tic Tac Toe and Hangman! Run tic or hang <word> to start new games.
 * Emoji replacements! \:rocket\: => :rocket: (like on Slack and Discord)
 
-For replacing newlines, I often use bulkseotools.com/add-remove-line-breaks.php.
+For replacing newlines, I often use https\://bulkseotools.com/add-remove-line-breaks.php.
 
 Join the Devzat discord server: https://discord.gg/5AUjJvBHeT
 
@@ -717,6 +716,7 @@ func manCMD(rest string, u *User) {
 
 	if cmd, ok := getCMD(rest); ok {
 		u.room.broadcast(Devbot, "Usage: "+cmd.name+" "+cmd.argsInfo+"  \n"+cmd.info)
+		return
 	}
 	// Plugin commands
 	if c, ok := PluginCMDs[rest]; ok {
@@ -737,6 +737,12 @@ func lsCMD(rest string, u *User) {
 			u.room.broadcast("", usersList)
 			return
 		}
+	}
+	if rest == "-i" && auth(u) { // A ls -i option is available for admins. It is used to show the id of each user.
+		for _, us := range u.room.users {
+			u.room.broadcast("", us.id+" "+us.Name)
+		}
+		return
 	}
 	if rest != "" {
 		u.room.broadcast("", "ls: "+rest+" Permission denied")

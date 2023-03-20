@@ -9,7 +9,7 @@ Feel free to make a [new issue](https://github.com/quackduck/devzat/issues) if s
 git clone https://github.com/quackduck/devzat
 cd devzat
 ```
-To compile Devzat, you will need to have Go installed with a minimum version of 1.17.
+To compile Devzat, you will need Go installed with a minimum version of 1.17.
 
 Now run `go install` to install the Devzat binary globally, or run `go build` to build and keep the binary in the working directory.
 
@@ -66,6 +66,22 @@ kick <user>
 
 If running these commands makes Devbot complain about authorization, you need to add your ID under the `admins` key in your config file (`devzat-config.yml` by default).
 
+### Enabling a user allowlist
+
+Devzat can use be used as a private chatroom. Add this to your config:
+
+```yaml
+private: true # enable allowlist checking
+allowlist: 
+  272b326d7d5e9a6b1d98a10b453bdc8cc950fc15cae2c2e858e30645c72ae7c0: 'John Doe'
+  ...
+```
+
+The `allowlist` has the same format as the `admins` list. Add the IDs of the allowed users and info about that user (this is to make IDs easier to identify when editing the config file, and isn't used by Devzat)
+
+All admins are allowed even if their ID is not in the allowlist. So, if everyone on the private server is an admin, an allowlist isn't necessary, just enable private mode.
+
+Message backlog on `#main` is disabled in private chats. Only those logged in at the same time as you can read your messages.
 
 ### Enabling integrations
 
@@ -80,7 +96,7 @@ Now make a new file at that path. This is your integration config file.
 
 #### Using the Slack integration
 
-Devzat supports a bridge to Slack. You'll need Slack bot token so Devzat can post to and receive messages from Slack. Follow the guide [here](https://api.slack.com/authentication/basics) to get your token and add a Slack app to your workspace. Ensure it has read and write scopes.
+Devzat supports a bridge to Slack. You'll need a Slack bot token so Devzat can post to and receive messages from Slack. Follow the guide [here](https://api.slack.com/authentication/basics) to get your token and add a Slack app to your workspace. Ensure it has read and write scopes.
 
 Add your bot token to your integration config file. The `prefix` key defines what messages from Slack rendered in Devzat will be prefixed with. Find the channel ID of the channel you want to bridge to with a right-click on it in Slack.
 
@@ -89,6 +105,19 @@ slack:
     token: xoxb-XXXXXXXXXX-XXXXXXXXXXXX-XXXXXXXXXXXXXXXXXXXXXXXX
     channel_id: XXXXXXXXXXX # usually starts with a C, but could be a G or D
     prefix: Slack
+```
+
+#### Using the Discord integration
+
+Devzat supports a bridge to Discord. You'll need a Discord bot token so Devzat can post to and receive messages from Discord. Follow the guide [here](https://www.writebots.com/discord-bot-token) to set up your bot.
+
+Add your bot token to your integration config file. The `prefix` key defines what messages from Discord rendered in Devzat will be prefixed with. Find the channel ID of the channel you want to bridge to with a right-click on it.
+
+```yaml
+discord:
+    token: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+    channel_id: XXXXXXXXXXXXXXXXXXX
+    prefix: Discord
 ```
 
 #### Using the Twitter integration
@@ -130,3 +159,4 @@ There are 4 environment variables you can set to quickly disable integrations on
 * `DEVZAT_OFFLINE_SLACK=true` will disable Slack
 * `DEVZAT_OFFLINE_RPC=true` will disable the gRPC server
 * `DEVZAT_OFFLINE=true` will disable all integrations.
+

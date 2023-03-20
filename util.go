@@ -4,19 +4,19 @@ import (
 	"bytes"
 	"crypto/sha256"
 	_ "embed"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
 	"math/rand"
 	"os"
+	"runtime/debug"
 	"strings"
 	"text/tabwriter"
 	"time"
 
-	goaway "github.com/TwiN/go-away"
 	"github.com/acarl005/stripansi"
+	"github.com/gliderlabs/ssh"
 	markdown "github.com/quackduck/go-term-markdown"
 )
 
@@ -94,6 +94,22 @@ func auth(u *User) bool {
 	return ok
 }
 
+func keepSessionAlive(s ssh.Session) {
+	for {
+		time.Sleep(time.Minute * 3)
+		_, err := s.SendRequest("keepalive@devzat", true, nil)
+		if err != nil {
+			return
+		}
+	}
+}
+
+func protectFromPanic() {
+	if i := recover(); i != nil {
+		MainRoom.broadcast(Devbot, "Slap the developers in the face for me, the server almost crashed, also tell them this: "+fmt.Sprint(i)+", stack: "+string(debug.Stack()))
+	}
+}
+
 // removes arrows, spaces and non-ascii-printable characters
 func cleanName(name string) string {
 	s := ""
@@ -118,19 +134,15 @@ func mdRender(a string, beforeMessageLen int, lineWidth int) string {
 	if strings.Contains(a, "![") && strings.Contains(a, "](") {
 		lineWidth = int(math.Min(float64(lineWidth/2), 200)) // max image width is 200
 	}
-	md := string(markdown.Render(a, lineWidth-(beforeMessageLen), 0))
+	md := string(markdown.Render(a, lineWidth-beforeMessageLen, beforeMessageLen))
 	md = strings.TrimSuffix(md, "\n")
-	split := strings.Split(md, "\n")
-	for i := range split {
-		if i == 0 {
-			continue // the first line will automatically be padded
-		}
-		split[i] = strings.Repeat(" ", beforeMessageLen) + split[i]
+	if md == "" {
+		return ""
 	}
-	if len(split) == 1 {
+	if len(md) < beforeMessageLen {
 		return md
 	}
-	return strings.Join(split, "\n")
+	return md[beforeMessageLen:]
 }
 
 // Returns true and the User with the same name if the username is taken, false and nil otherwise
@@ -176,10 +188,10 @@ func readBans() {
 }
 
 func findUserByName(r *Room, name string) (*User, bool) {
-	r.usersMutex.Lock()
-	defer r.usersMutex.Unlock()
+	r.usersMutex.RLock()
+	defer r.usersMutex.RUnlock()
 	for _, u := range r.users {
-		if stripansi.Strip(u.Name) == name {
+		if stripansi.Strip(u.Name) == name || "@"+stripansi.Strip(u.Name) == name {
 			return u, true
 		}
 	}
@@ -188,8 +200,10 @@ func findUserByName(r *Room, name string) (*User, bool) {
 
 func remove(s []*User, a *User) []*User {
 	for j := range s {
-		if s[j] == a {
-			return append(s[:j], s[j+1:]...)
+		if s[j] == a { // https://github.com/golang/go/wiki/SliceTricks#delete
+			copy(s[j:], s[j+1:])
+			s[len(s)-1] = nil
+			return s[:len(s)-1]
 		}
 	}
 	return s
@@ -197,6 +211,9 @@ func remove(s []*User, a *User) []*User {
 
 func devbotChat(room *Room, line string) {
 	if strings.Contains(line, "devbot") {
+		if strings.HasPrefix(line, "kick ") || strings.HasPrefix(line, "ban ") { // devbot already replied in the command function
+			return
+		}
 		if strings.Contains(line, "how are you") || strings.Contains(line, "how you") {
 			devbotRespond(room, []string{"How are _you_",
 				"Good as always lol",
@@ -247,12 +264,11 @@ func devbotChat(room *Room, line string) {
 		devbotRespond(room, []string{"The repo's at github.com/quackduck/devzat!", ":star: github.com/quackduck/devzat :star:", "# github.com/quackduck/devzat"}, 100)
 	}
 	if strings.Contains(line, "rocket") || strings.Contains(line, "spacex") || strings.Contains(line, "tesla") {
-		devbotRespond(room, []string{"Doge to the mooooon :rocket:",
-			"I should have bought ETH before it :rocket:ed to the :moon:",
+		devbotRespond(room, []string{
 			":rocket:",
 			"I like rockets",
 			"SpaceX",
-			"Elon Musk OP"}, 80)
+			"Elon Musk sus"}, 80)
 	}
 	if strings.Contains(line, "elon") {
 		devbotRespond(room, []string{"When something is important enough, you do it even if the odds are not in your favor. - Elon",
@@ -287,32 +303,7 @@ func shasum(s string) string {
 	return hex.EncodeToString(h[:])
 }
 
-var detector = goaway.NewProfanityDetector().WithSanitizeSpaces(false)
-
-func rmBadWords(text string) string {
-	if !Config.Censor {
-		return text
-	}
-	return detector.Censor(text)
-}
-
-func init() {
-	okayIshWords := []string{"ZnVjaw==", "Y3JhcA==", "c2hpdA==", "YXJzZQ==", "YXNz", "YnV0dA=="} // base 64 encoded okay-ish swears
-	for i := 0; i < len(goaway.DefaultProfanities); i++ {
-		for _, okayIshWord := range okayIshWords {
-			okayIshWordb, _ := base64.StdEncoding.DecodeString(okayIshWord)
-			if goaway.DefaultProfanities[i] == string(okayIshWordb) {
-				fmt.Println(string(okayIshWordb))
-				goaway.DefaultProfanities = append(goaway.DefaultProfanities[:i], goaway.DefaultProfanities[i+1:]...)
-				i-- // so we don't skip the next word
-				break
-			}
-		}
-	}
-}
-
 func holidaysCheck(u *User) {
-
 	currentMonth := time.Now().Month()
 	today := time.Now().Day()
 
@@ -365,5 +356,5 @@ func fmtTime(u *User, lastStamp time.Time) string {
 	if u.FormatTime24 {
 		return lastStamp.In(u.Timezone.Location).Format("15:04")
 	}
-	return lastStamp.In(u.Timezone.Location).Format("3:04 pm")
+	return lastStamp.In(u.Timezone.Location).Format("3:04")
 }
