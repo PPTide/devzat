@@ -188,23 +188,22 @@ func (r *Room) broadcast(senderName, msg string) {
 	}
 	if Integrations.Slack != nil || Integrations.Discord != nil {
 		var toSendS string
-		var toSendD string
 		if senderName != "" {
 			if Integrations.Slack != nil {
 				toSendS = "[" + r.name + "] *" + senderName + "*: " + msg
 			}
-			if Integrations.Discord != nil {
-				toSendD = "[" + r.name + "] **" + senderName + "**: " + msg
-			}
 		} else {
 			toSendS = "[" + r.name + "] " + msg
-			toSendD = toSendS
 		}
 		if Integrations.Slack != nil {
 			SlackChan <- toSendS
 		}
 		if Integrations.Discord != nil {
-			DiscordChan <- toSendD
+			DiscordChan <- DiscordMsg{
+				senderName: senderName,
+				msg:        msg,
+				channel:    r.name,
+			}
 		}
 	}
 	r.broadcastNoBridges(senderName, msg)
@@ -252,13 +251,14 @@ func (r *Room) broadcastNoBridges(senderName, msg string) {
 	if msg == "" {
 		return
 	}
-	msg = strings.ReplaceAll(msg, "@everyone", Green.Paint("everyone\a"))
-	r.usersMutex.RLock()
-	msg = r.findMention(msg)
-	for i := range r.users {
+	msg = r.findMention(strings.ReplaceAll(msg, "@everyone", Green.Paint("everyone\a")))
+	//go func() {
+	//r.usersMutex.RLock()
+	for i := 0; i < len(r.users); i++ { // updates when new users join or old users leave. it is okay to read concurrently.
 		r.users[i].writeln(senderName, msg)
 	}
-	r.usersMutex.RUnlock()
+	//r.usersMutex.RUnlock()
+	//}()
 	if r == MainRoom && len(Backlog) > 0 {
 		Backlog = Backlog[1:]
 		Backlog = append(Backlog, backlogMessage{time.Now(), senderName, msg + "\n"})
