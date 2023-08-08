@@ -1,4 +1,8 @@
-# Devzat
+<div align="center">
+<img src="https://github.com/quackduck/devzat/assets/38882631/046fbb4d-dff2-41e9-a61c-271d0820473e" style="height: 100px; border-radius: 50px;" />
+</div>
+
+***
 
 <a href="https://www.producthunt.com/posts/devzat?utm_source=badge-top-post-badge&utm_medium=badge&utm_souce=badge-devzat" target="_blank"><img src="https://api.producthunt.com/widgets/embed-image/v1/top-post-badge.svg?post_id=298678&theme=light&period=daily" alt="Devzat - Chat with other devs over SSH in your Terminal | Product Hunt" style="width: 250px; height: 54px;" width="250" height="54" /></a>
 
@@ -42,6 +46,8 @@ ssh chat
 We also have a Slack bridge! If you're on the [Hack Club](https://hackclub.com) Slack, check out the `#ssh-chat-bridge` channel!
 
 Feel free to make a [new issue](https://github.com/quackduck/devzat/issues) if something doesn't work.
+
+See the [status site](https://stats.uptimerobot.com/kxMQqfYk4y) of the main Devzat server to check if it might be down.
 
 ### Want to host your own instance?
 

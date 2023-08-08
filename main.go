@@ -53,11 +53,13 @@ type Room struct {
 // User represents a user connected to the SSH server.
 // Exported fields represent ones saved to disk. (see also: User.savePrefs())
 type User struct {
-	Name     string
-	Pronouns []string
-	Bio      string
-	session  ssh.Session
-	term     *terminal.Terminal
+	Name            string
+	Prompt          string
+	formattedPrompt string
+	Pronouns        []string
+	Bio             string
+	session         ssh.Session
+	term            *terminal.Terminal
 
 	room      *Room
 	messaging *User // currently messaging this User in a DM
@@ -158,6 +160,7 @@ func main() {
 		Log.Printf("Starting a Devzat server on port %d and profiling on port %d\n", Config.Port, Config.ProfilePort)
 	}
 	go getMsgsFromSlack()
+	checkKey(Config.KeyFile)
 	if !Config.Private { // allow non-sshkey logins on a non-private server
 		go func() {
 			fmt.Println("Also serving on port", Config.AltPort)
@@ -196,13 +199,21 @@ func (r *Room) broadcast(senderName, msg string) {
 			toSendS = "[" + r.name + "] " + msg
 		}
 		if Integrations.Slack != nil {
-			SlackChan <- toSendS
+			select {
+			case SlackChan <- toSendS:
+			default:
+				Log.Println("Overflow in Slack channel")
+			}
 		}
 		if Integrations.Discord != nil {
-			DiscordChan <- DiscordMsg{
+			select {
+			case DiscordChan <- DiscordMsg{
 				senderName: senderName,
 				msg:        msg,
 				channel:    r.name,
+			}:
+			default:
+				Log.Println("Overflow in Discord channel")
 			}
 		}
 	}
@@ -254,8 +265,13 @@ func (r *Room) broadcastNoBridges(senderName, msg string) {
 	msg = r.findMention(strings.ReplaceAll(msg, "@everyone", Green.Paint("everyone\a")))
 	//go func() {
 	//r.usersMutex.RLock()
+	//timeAtStart := time.Now()
 	for i := 0; i < len(r.users); i++ { // updates when new users join or old users leave. it is okay to read concurrently.
+		//if time.Since(timeAtStart) > time.Second*3 {
+		//	go r.users[i].writeln(senderName, msg)
+		//} else {
 		r.users[i].writeln(senderName, msg)
+		//}
 	}
 	//r.usersMutex.RUnlock()
 	//}()
@@ -331,6 +347,10 @@ func newUser(s ssh.Session) *User {
 		term.Write([]byte("Devzat does not allow non-pty joins. What are you trying to pull here?"))
 		return nil
 	}
+	if w <= 0 { // strange terminals
+		w = 80
+	}
+
 	host, _, _ := net.SplitHostPort(s.RemoteAddr().String()) // definitely should not give an err
 
 	toHash := ""
@@ -360,7 +380,9 @@ func newUser(s ssh.Session) *User {
 
 	go func() {
 		for win := range winChan {
-			u.winWidth = win.Width
+			if win.Width > 0 {
+				u.winWidth = win.Width
+			}
 		}
 	}()
 
@@ -408,6 +430,7 @@ func newUser(s ssh.Session) *User {
 		u.changeColor("bg-random") //nolint:errcheck // we know "bg-random" is a valid color
 	}
 
+	u.Prompt = "\\u:\\S"
 	timeoutChan := make(chan bool)
 	timedOut := false
 	go func() { // timeout to minimize inactive connections
@@ -523,6 +546,9 @@ func (u *User) close(msg string) {
 	if u.isBridge {
 		return
 	}
+	if u.session == nil {
+		return
+	}
 	u.session.Close()
 	u.session = nil
 	err := u.savePrefs()
@@ -539,6 +565,9 @@ func (u *User) close(msg string) {
 }
 
 func (u *User) ban(banner string) {
+	if u.addr == "" && u.id == "" {
+		return
+	}
 	Bans = append(Bans, Ban{u.addr, u.id})
 	saveBans()
 	uid := u.id
@@ -640,7 +669,7 @@ func (u *User) pickUsernameQuietly(possibleName string) error {
 	possibleName = rmBadWords(possibleName)
 
 	u.Name, _ = applyColorToData(possibleName, u.Color, u.ColorBG) //nolint:errcheck // we haven't changed the color so we know it's valid
-	u.term.SetPrompt(u.Name + ": ")
+	u.formatPrompt()
 	return nil
 }
 
@@ -725,14 +754,57 @@ func (u *User) changeRoom(r *Room) {
 	u.room.broadcast("", Green.Paint(" --> ")+u.Name+" has joined "+Blue.Paint(u.room.name))
 }
 
+func (u *User) formatPrompt() {
+	u.formattedPrompt = ""
+	last_escaped := false
+	for _, c := range u.Prompt {
+		if c == '\\' {
+			last_escaped = true
+		} else if last_escaped {
+			last_escaped = false
+			switch c {
+			case 'u':
+				u.formattedPrompt += u.Name
+			case 'w':
+				u.formattedPrompt += copyColor(u.room.name, u.Name)
+			case 'W':
+				if u.room.name == "#main" {
+					u.formattedPrompt += copyColor("~", u.Name)
+				} else {
+					u.formattedPrompt += copyColor("~/"+u.room.name[1:], u.Name)
+				}
+			case 't', 'T':
+				u.formattedPrompt += fmtTime(u, time.Now())
+			case 'h', 'H':
+				u.formattedPrompt += copyColor("devzat", u.Name)
+			case 'S':
+				u.formattedPrompt += " "
+			case '$':
+				if auth(u) {
+					u.formattedPrompt += "#"
+				} else {
+					u.formattedPrompt += "$"
+				}
+			default:
+				u.formattedPrompt += string(c)
+			}
+		} else {
+			u.formattedPrompt += string(c)
+		}
+	}
+	u.showPrompt()
+}
+
+func (u *User) showPrompt() {
+	u.term.SetPrompt(u.formattedPrompt)
+}
+
 func (u *User) repl() {
 	for {
 		u.lastInteract = time.Now()
 		line, err := u.term.ReadLine()
 		if err == io.EOF {
-			if u.session != nil {
-				u.close(u.Name + " has left the chat")
-			}
+			u.close(u.Name + " has left the chat")
 			return
 		}
 
@@ -761,7 +833,7 @@ func (u *User) repl() {
 		}
 		line = strings.TrimSpace(line)
 
-		u.term.SetPrompt(u.Name + ": ")
+		u.showPrompt()
 
 		if hasNewlines {
 			calculateLinesTaken(u, u.Name+": "+line, u.winWidth)
@@ -774,7 +846,7 @@ func (u *User) repl() {
 		}
 
 		AntispamMessages[u.id]++
-		time.AfterFunc(5*time.Second, func() {
+		time.AfterFunc(15*time.Second, func() {
 			AntispamMessages[u.id]--
 		})
 		if AntispamMessages[u.id] >= 30 {

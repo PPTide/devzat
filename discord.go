@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/acarl005/stripansi"
 	"github.com/bwmarrin/discordgo"
@@ -71,10 +72,13 @@ func discordInit() {
 		}
 	}
 	DiscordChan = make(chan DiscordMsg, 100)
+	editsInLastMinute := 0 // discord allows for 30 webhook edits per minute: https://twitter.com/lolpython/status/967621046277820416
 	go func() {
+		overloading := false
 		for msg := range DiscordChan {
+			sendingTimeStart := time.Now()
 			txt := strings.ReplaceAll(msg.msg, "@everyone", "@\\everyone")
-			if Integrations.Discord.CompactMode {
+			if Integrations.Discord.CompactMode || overloading {
 				var toSend string
 				if msg.senderName == "" {
 					toSend = strings.ReplaceAll(stripansi.Strip("["+msg.channel+"] "+txt), `\n`, "\n")
@@ -86,19 +90,39 @@ func discordInit() {
 					Log.Println("Error sending Discord message:", err)
 				}
 			} else {
-				_, err := sess.WebhookEditWithToken(webhook.ID, webhook.Token, webhook.Name, createDiscordImage(msg.senderName))
-				if err != nil {
-					Log.Println("Error modifying Discord webhook:", err)
+				//Log.Println("edits in last minute", editsInLastMinute)
+				if len(DiscordChan) < 5 { // rate-limit the edits
+					avatarFor := msg.senderName
+					//if len(DiscordChan) == 9 { // blank out pfp if we're about to hit the limit
+					//	avatarFor = ""
+					//}
+					//Log.Println("before edit")
+					//_, err = sess.WebhookEditWithToken(webhook.ID, webhook.Token, webhook.Name, createDiscordImage(avatarFor))
+					_, err = sess.WebhookEdit(webhook.ID, webhook.Name, createDiscordImage(avatarFor), webhook.ChannelID, discordgo.WithRetryOnRatelimit(true))
+					if err != nil {
+						Log.Println("Error modifying Discord webhook:", err)
+					}
+					//Log.Println("after edit", msg.msg)
+					editsInLastMinute++
+					time.AfterFunc(time.Minute, func() { editsInLastMinute-- })
 				}
-				_, err = sess.WebhookExecute(webhook.ID, webhook.Token, true,
+				_, err = sess.WebhookExecute(webhook.ID, webhook.Token, false,
 					&discordgo.WebhookParams{
 						Content:  strings.ReplaceAll(stripansi.Strip(txt), `\n`, "\n"),
 						Username: stripansi.Strip("[" + msg.channel + "] " + msg.senderName),
 					},
+					discordgo.WithRetryOnRatelimit(true),
 				)
 				if err != nil {
 					Log.Println("Error sending Discord message:", err)
 				}
+			}
+			elaspsedTime := time.Since(sendingTimeStart)
+			if elaspsedTime.Seconds() > 20 {
+				overloading = true
+			}
+			if len(DiscordChan) == 0 && elaspsedTime.Seconds() < 10 {
+				overloading = false
 			}
 		}
 	}()
@@ -116,11 +140,15 @@ func discordMessageHandler(_ *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 	h := sha1.Sum([]byte(m.Author.ID))
 	i, _ := strconv.ParseInt(hex.EncodeToString(h[:2]), 16, 0) // two bytes as an int
-	DiscordUser.Name = Magenta.Paint(Integrations.Discord.Prefix+" ") + (Styles[int(i)%len(Styles)]).apply(m.Author.Username)
+	name := m.Author.GlobalName
+	if m.Member != nil && m.Member.Nick != "" {
+		name = m.Member.Nick
+	}
+	DiscordUser.Name = Magenta.Paint(Integrations.Discord.Prefix+" ") + (Styles[int(i)%len(Styles)]).apply(name)
 
 	msgContent := strings.TrimSpace(m.ContentWithMentionsReplaced())
 	if Integrations.Slack != nil {
-		SlackChan <- Integrations.Discord.Prefix + " " + m.Author.Username + ": " + msgContent // send this discord message to slack
+		SlackChan <- Integrations.Discord.Prefix + " " + name + ": " + msgContent // send this discord message to slack
 	}
 	runCommands(msgContent, DiscordUser)
 }
@@ -163,6 +191,13 @@ func createDiscordImage(user string) string {
 	}
 
 	dst := image.NewNRGBA(image.Rect(0, 0, 256, 256))
+	//(&draw.Kernel{
+	//	Support: 10,
+	//	At: func(t float64) float64 {
+	//		return math.Exp(-t * t * 2)
+	//	},
+	//}).Scale(dst, dst.Rect, img, img.Bounds(), draw.Over, nil)
+	//draw.BiLinear.Scale(dst, dst.Rect, img, img.Bounds(), draw.Over, nil)
 	draw.CatmullRom.Scale(dst, dst.Rect, img, img.Bounds(), draw.Over, nil)
 	//draw.NearestNeighbor.Scale(dst, dst.Rect, img, img.Bounds(), draw.Over, nil)
 	buff := new(bytes.Buffer)
@@ -181,5 +216,6 @@ func createDiscordImage(user string) string {
 		user  string
 		image string
 	}{user: user, image: result})
+	//Log.Println("returned", result)
 	return result
 }

@@ -54,7 +54,7 @@ func sendCurrentUsersTwitterMessage() {
 		t, _, err := Client.Statuses.Update("People on Devzat rn: "+stripansi.Strip(fmt.Sprint(names))+"\nJoin em with \"ssh devzat.hackclub.com\"\nUptime: "+printPrettyDuration(time.Since(StartupTime)), nil)
 		if err != nil {
 			if !strings.Contains(err.Error(), "twitter: 187 Status is a duplicate.") {
-				MainRoom.broadcast(Devbot, "err: "+err.Error())
+				Log.Println("Twitter error:", err)
 			}
 			Log.Println("Got twitter err", err)
 			return
@@ -72,4 +72,9 @@ func twitterInit() { // called by init() in config.go
 	token := oauth1.NewToken(Integrations.Twitter.AccessToken, Integrations.Twitter.AccessTokenSecret)
 	httpClient := config.Client(oauth1.NoContext, token)
 	Client = twitter.NewClient(httpClient)
+	_, _, err := Client.Accounts.VerifyCredentials(nil)
+	if err != nil {
+		Log.Println("Twitter auth failed:", err)
+		Integrations.Twitter = nil
+	}
 }

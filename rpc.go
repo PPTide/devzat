@@ -10,7 +10,6 @@ import (
 	"net"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -282,16 +281,14 @@ func getMiddlewareResult(u *User, line string) string {
 	middlewareLock.Lock()
 	defer middlewareLock.Unlock()
 	// Middleware hook
-	if len(ListenersMiddleware) > 0 {
-		for i := range ListenersMiddleware {
-			ListenersMiddleware[i] <- &pb.Event{
-				Room: u.room.name,
-				From: stripansi.Strip(u.Name),
-				Msg:  line,
-			}
-			if res := (<-ListenersMiddleware[i]).(*pb.ListenerClientData_Response).Response.Msg; res != nil {
-				line = *res
-			}
+	for i := 0; i < len(ListenersMiddleware); i++ {
+		ListenersMiddleware[i] <- &pb.Event{
+			Room: u.room.name,
+			From: stripansi.Strip(u.Name),
+			Msg:  line,
+		}
+		if res := (<-ListenersMiddleware[i]).(*pb.ListenerClientData_Response).Response.Msg; res != nil {
+			line = *res
 		}
 	}
 	return line
@@ -375,10 +372,11 @@ func lsTokensCMD(_ string, u *User) {
 		return
 	}
 	msg := "Tokens:  \n"
-	i := 0
+	fmtString := "%" + fmt.Sprint(len(fmt.Sprint(len(Tokens)))) + "d"
+	i := 1
 	for t := range Tokens {
+		msg += Cyan.Cyan(fmt.Sprintf(fmtString, i)) + ". " + shasum(t) + "\t" + Tokens[t] + "  \n"
 		i++
-		msg += Cyan.Cyan(strconv.Itoa(i+1)) + ". " + shasum(t) + "\t" + Tokens[t] + "  \n"
 	}
 	u.writeln(Devbot, msg)
 }

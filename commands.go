@@ -1,10 +1,14 @@
 package main
 
 import (
+	"fmt"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"math"
 	"math/rand"
+	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,6 +17,8 @@ import (
 
 	"github.com/alecthomas/chroma"
 	chromastyles "github.com/alecthomas/chroma/styles"
+	"github.com/fatih/color"
+	"github.com/jwalton/gchalk"
 	markdown "github.com/quackduck/go-term-markdown"
 	"github.com/quackduck/term"
 	"github.com/shurcooL/tictactoe"
@@ -42,6 +48,7 @@ var (
 		{"cd", cdCMD, "#room|user", "Join #room, DM user or run cd to see a list"}, // won't actually run, here just to show in docs
 		{"tz", tzCMD, "<zone> [24h]", "Set your IANA timezone (like tz Asia/Dubai) and optionally set 24h"},
 		{"nick", nickCMD, "<name>", "Change your username"},
+		{"prompt", promptCMD, "<prompt>", "Change your promt. Run `man prompt` for more info"},
 		{"pronouns", pronounsCMD, "@user|pronouns", "Set your pronouns or get another user's"},
 		{"theme", themeCMD, "<theme>|list", "Change the syntax highlighting theme"},
 		{"rest", commandsRestCMD, "", "Uncommon commands list"}}
@@ -59,6 +66,9 @@ var (
 		{"pwd", pwdCMD, "", "Show your current room"},
 		//		{"sixel", sixelCMD, "<png url>", "Render an image in high quality"},
 		{"shrug", shrugCMD, "", `¯\\\_(ツ)\_/¯`}, // won't actually run, here just to show in docs
+		{"uname", unameCMD, "", "Show build info"},
+		{"uptime", uptimeCMD, "", "Show server uptime"},
+		{"8ball", EightBallCMD, "<question>", "Always tells the truth."},
 	}
 	SecretCMDs = []CMD{
 		{"ls", lsCMD, "???", "???"},
@@ -67,7 +77,12 @@ var (
 		{"su", nickCMD, "???", "This is an alias of nick"},
 		{"colour", colorCMD, "???", "This is an alias of color"}, // appease the british
 		{":q", exitCMD, "", "This is an alias of exit"},          // appease the Vim user
+		{":wq", exitCMD, "", "This is an alias of exit"},         // appease the Vim user, that wants to save
+		{"neofetch", neofetchCMD, "???", "???"},                  //apease the Arch user (mostly)
 	}
+
+	unameCommit = ""
+	unameTime   = ""
 )
 
 const (
@@ -228,7 +243,7 @@ func devmonkCMD(_ string, u *User) {
 	text := sentences[rand.Intn(len(sentences))]
 	u.writeln(Devbot, "Okay type this text: \n\n> "+text)
 	u.term.SetPrompt("> ")
-	defer u.term.SetPrompt(u.Name + ": ")
+	defer u.formatPrompt()
 	start := time.Now()
 	line, err := u.term.ReadLine()
 	if err == term.ErrPasteIndicator { // TODO: doesn't work for some reason?
@@ -336,6 +351,7 @@ func bellCMD(rest string, u *User) {
 }
 
 func cdCMD(rest string, u *User) {
+	defer u.formatPrompt()
 	if u.messaging != nil {
 		u.messaging = nil
 		u.writeln(Devbot, "Left private chat")
@@ -399,6 +415,7 @@ func cdCMD(rest string, u *User) {
 }
 
 func tzCMD(tzArg string, u *User) {
+	defer u.formatPrompt()
 	if tzArg == "" {
 		u.Timezone.Location = nil
 		u.room.broadcast(Devbot, "Enabled relative times!")
@@ -430,7 +447,7 @@ func bioCMD(line string, u *User) {
 	if line == "" {
 		u.writeln(Devbot, "Your current bio is:  \n> "+u.Bio)
 		u.term.SetPrompt("> ")
-		defer u.term.SetPrompt(u.Name + ": ")
+		defer u.formatPrompt()
 		for {
 			input, err := u.term.ReadLine()
 			if err != nil {
@@ -467,6 +484,11 @@ func idCMD(line string, u *User) {
 
 func nickCMD(line string, u *User) {
 	u.pickUsername(line) //nolint:errcheck // if reading input fails, the next repl will err out
+}
+
+func promptCMD(line string, u *User) {
+	u.Prompt = line
+	u.formatPrompt()
 }
 
 func listBansCMD(_ string, u *User) {
@@ -514,6 +536,16 @@ func banCMD(line string, u *User) {
 	var victim *User
 	var ok bool
 	banner := u.Name
+
+	boreName := "http://bore.pub:1337"
+	if split[0] == boreName {
+		bore, boreOnline := findUserByName(u.room, boreName)
+		if boreOnline {
+			u.room.broadcast(bore.Name, "Nice try devbot.")
+			u.room.broadcast("", "devbot has been banned by "+banner)
+			return
+		}
+	}
 	if split[0] == "devbot" {
 		u.room.broadcast(Devbot, "Do you really think you can ban me, puny human?")
 		victim = u // mwahahahaha - devbot
@@ -563,7 +595,7 @@ func kickCMD(line string, u *User) {
 
 func colorCMD(rest string, u *User) {
 	if rest == "which" {
-		u.room.broadcast(Devbot, "fg: "+u.Color+" & bg: "+u.ColorBG)
+		u.room.broadcast(Devbot, u.Color+" "+u.ColorBG)
 	} else if err := u.changeColor(rest); err != nil {
 		u.room.broadcast(Devbot, err.Error())
 	}
@@ -701,7 +733,21 @@ func pronounsCMD(line string, u *User) {
 }
 
 func emojisCMD(_ string, u *User) {
-	u.room.broadcast(Devbot, "Check out https\\://github.com/ikatyang/emoji-cheat-sheet")
+	u.room.broadcast(Devbot, `See the complete list at https://github.com/ikatyang/emoji-cheat-sheet/  
+Here are a few examples (type :emoji_text: to use):  
+:doughnut: doughnut  
+:yum: yum  
+:joy: joy  
+:thinking: thinking  
+:smile: smile  
+:zipper_mouth_face: zipper_mouth_face  
+:kangaroo: kangaroo  
+:sleepy: sleepy  
+:hot_pepper:  hot_pepper  
+:face_with_thermometer: face_with_thermometer  
+:dumpling: dumpling  
+:sunglasses: sunglasses  
+:skull: skull`)
 }
 
 func commandsRestCMD(_ string, u *User) {
@@ -711,6 +757,23 @@ func commandsRestCMD(_ string, u *User) {
 func manCMD(rest string, u *User) {
 	if rest == "" {
 		u.room.broadcast(Devbot, "What command do you want help with?")
+		return
+	}
+
+	if rest == "prompt" {
+		u.room.broadcast(Devbot, `prompt <prompt> sets your prompt
+
+You can use some bash PS1 tags in it.  
+The supported tags are:  
+* \\u: your user name
+* \\h, \\H: devzat colored like your username
+* \\t, \\T: the time in your preferred formatting
+* \\w: the current room
+* \\W: the current room with #main aliased to ~
+* \\S: a space character
+* \\$: $ for normal users, # for admins
+
+The default prompt is "\\u:\\S".`)
 		return
 	}
 
@@ -758,9 +821,84 @@ func lsCMD(rest string, u *User) {
 	for _, us := range u.room.users {
 		usersList += us.Name + Blue.Paint("/ ")
 	}
+	usersList += Devbot + Blue.Paint("/ ")
 	u.room.broadcast("", "README.md "+usersList+roomList)
 }
 
 func commandsCMD(_ string, u *User) {
 	u.room.broadcast("", "Commands  \n"+autogenCommands(MainCMDs))
+}
+
+func unameCMD(rest string, u *User) {
+	if unameCommit == "" || unameTime == "" {
+		u.room.broadcast("", "No uname output available. Build Devzat with `"+color.HiYellowString(`go build -ldflags "-X 'main.unameCommit=$(git rev-parse HEAD)' -X 'main.unameTime=$(date)'"`)+"` to enable.")
+		return
+	}
+	u.room.broadcast("", "Devzat ("+unameCommit+") "+unameTime)
+}
+
+func uptimeCMD(rest string, u *User) {
+	uptime := time.Since(StartupTime)
+	u.room.broadcast("", fmt.Sprintf("up %v days, %02d:%02d:%02d", int(uptime.Hours()/24), int(math.Mod(uptime.Hours(), 24)), int(math.Mod(uptime.Minutes(), 60)), int(math.Mod(uptime.Seconds(), 60))))
+}
+
+func neofetchCMD(_ string, u *User) {
+	content, err := os.ReadFile(Config.DataDir + "/neofetch.txt")
+	if err != nil {
+		u.room.broadcast("", "Error reading "+Config.DataDir+"/neofetch.txt: "+err.Error())
+		return
+	}
+	contentSplit := strings.Split(string(content), "\n")
+	uptime := time.Since(StartupTime)
+	uptimeStr := fmt.Sprintf("%v days, %v hours, %v minutes", int(uptime.Hours()/24), int(math.Mod(uptime.Hours(), 24)), int(math.Mod(uptime.Minutes(), 60)))
+	memstats := runtime.MemStats{}
+	runtime.ReadMemStats(&memstats)
+	yellow := gchalk.RGB(255, 255, 0)
+	userHost := yellow(os.Getenv("USER")) + "@" + yellow(os.Getenv("HOSTNAME"))
+	colorSwatch1 := "\u001B[30m\u001B[40m   \u001B[31m\u001B[41m   \u001B[32m\u001B[42m   \u001B[33m\u001B[43m   \u001B[34m\u001B[44m   \u001B[35m\u001B[45m   \u001B[36m\u001B[46m   \u001B[37m\u001B[47m   \u001B[m"
+	colorSwatch2 := "\u001B[38;5;8m\u001B[48;5;8m   \u001B[38;5;9m\u001B[48;5;9m   \u001B[38;5;10m\u001B[48;5;10m   \u001B[38;5;11m\u001B[48;5;11m   \u001B[38;5;12m\u001B[48;5;12m   \u001B[38;5;13m\u001B[48;5;13m   \u001B[38;5;14m\u001B[48;5;14m   \u001B[38;5;15m\u001B[48;5;15m   \u001B[m"
+	properties := []struct {
+		Key   string
+		Value string
+	}{
+		{"", userHost},
+		{"", strings.Repeat("-", len(userHost))},
+		{"OS", "Devzat"},
+		{"Uptime", uptimeStr},
+		{"Packages", fmt.Sprint(len(PluginCMDs)+len(MainCMDs)+len(RestCMDs)) + " commands"},
+		{"Shell", "devzat"},
+		{"Memory", fmt.Sprintf("%v MiB alloc / %v MiB sys, %v GC cycles", memstats.Alloc/1024/1024, memstats.Sys/1024/1024, memstats.NumGC)},
+		{"", ""},
+		{"", colorSwatch1},
+		{"", colorSwatch2},
+	}
+	result := ""
+	for i, l := range contentSplit {
+		result += l
+		if i < len(properties) {
+			p := properties[i]
+			if p.Key != "" && p.Value != "" {
+				result += "   " + yellow(p.Key) + ": " + p.Value
+			} else if p.Value != "" {
+				result += "   " + p.Value
+			}
+		}
+		result += "  \n"
+	}
+	u.room.broadcast("", result)
+}
+
+func EightBallCMD(_ string, u *User) {
+	responses := []string{
+		"It is certain, ", "It is decidedly so, ", "Without a doubt, ", "Yes, definitely, ",
+		"You may rely on it, ", "As I see it, yes, ", "Most likely, ", "Outlook good, ",
+		"Yes, ", "Signs point to yes, ", "Reply hazy, try again, ", "Ask again later, ",
+		"Better not tell you now, ", "Cannot predict now, ", "Concentrate and ask again, ",
+		"Don't count on it, ", "My reply is no, ", "My sources say no, ", "Outlook not so good, ",
+		"Very doubtful, ",
+	}
+	go func() {
+		time.Sleep(time.Second * time.Duration(rand.Intn(10)))
+		u.room.broadcast("8ball", responses[rand.Intn(len(responses))]+u.Name)
+	}()
 }
